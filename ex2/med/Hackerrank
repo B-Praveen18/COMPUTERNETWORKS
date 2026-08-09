@@ -1,0 +1,69 @@
+'use strict';
+
+process.stdin.resume();
+process.stdin.setEncoding('utf-8');
+
+let inputString = '';
+let currentLine = 0;
+
+process.stdin.on('data', inputStdin => {
+    inputString += inputStdin;
+});
+
+process.stdin.on('end', _ => {
+    inputString = inputString.trim().split('\n').map(string => {
+        return string.trim();
+    });
+    
+    main();    
+});
+
+function readLine() {
+    return inputString[currentLine++];
+}
+
+'use strict';
+
+function bitwiseAnd(N, K) {
+    let max = 0;
+
+    for (let a = 1; a <= N; a++) {
+        for (let b = a + 1; b <= N; b++) {
+            let value = a & b;
+
+            if (value < K && value > max) {
+                max = value;
+            }
+        }
+    }
+
+    return max;
+}
+
+const fs = require('fs');
+
+const input = fs.readFileSync(0, 'utf8').trim().split(/\s+/).map(Number);
+
+let index = 0;
+const T = input[index++];
+
+let output = [];
+
+for (let i = 0; i < T; i++) {
+    const N = input[index++];
+    const K = input[index++];
+
+    output.push(bitwiseAnd(N, K));
+}
+
+console.log(output.join('\n'));
+
+function main() {
+    const q = +(readLine());
+    
+    for (let i = 0; i < q; i++) {
+        const [n, k] = readLine().split(' ').map(Number);
+        
+        console.log(getMaxLessThanK(n, k));
+    }
+}
