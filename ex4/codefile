@@ -1,0 +1,512 @@
+#include <stdio.h>
+#include <string.h>
+
+#define MAX 10
+#define INF 999
+
+int n;
+char name[MAX][20];
+
+/* Original network topology */
+int originalCost[MAX][MAX];
+
+/* Distance Vector data */
+int dvCost[MAX][MAX];
+int dvNextHop[MAX][MAX];
+
+/* Link State data */
+int lsDist[MAX][MAX];
+int lsNextHop[MAX][MAX];
+
+
+/* =========================================================
+   READ NETWORK INPUT
+   ========================================================= */
+
+void readInput()
+{
+    printf("Enter number of nodes: ");
+    scanf("%d", &n);
+
+    printf("Enter node names:\n");
+
+    for (int i = 0; i < n; i++)
+        scanf("%s", name[i]);
+
+    /* Initialize original cost matrix */
+    for (int i = 0; i < n; i++)
+    {
+        for (int j = 0; j < n; j++)
+        {
+            if (i == j)
+                originalCost[i][j] = 0;
+            else
+                originalCost[i][j] = INF;
+        }
+    }
+
+    /* Enter links and their costs */
+    for (int i = 0; i < n; i++)
+    {
+        for (int j = i + 1; j < n; j++)
+        {
+            int link, c;
+
+            printf("Is there a link between %s and %s? (1-Yes, 0-No): ",
+                   name[i], name[j]);
+
+            scanf("%d", &link);
+
+            if (link == 1)
+            {
+                printf("Enter cost: ");
+                scanf("%d", &c);
+
+                originalCost[i][j] = c;
+                originalCost[j][i] = c;
+            }
+        }
+    }
+}
+
+
+/* =========================================================
+   DISTANCE VECTOR ROUTING
+   ========================================================= */
+
+/* Initialize Distance Vector tables */
+
+void initDistanceVector()
+{
+    for (int i = 0; i < n; i++)
+    {
+        for (int j = 0; j < n; j++)
+        {
+            dvCost[i][j] = originalCost[i][j];
+
+            if (i == j)
+                dvNextHop[i][j] = i;
+
+            else if (originalCost[i][j] < INF)
+                dvNextHop[i][j] = j;
+
+            else
+                dvNextHop[i][j] = -1;
+        }
+    }
+}
+
+
+/* Distance Vector Algorithm */
+
+void runDistanceVector()
+{
+    int updated = 1;
+
+    /* Repeat until no table changes */
+    while (updated)
+    {
+        updated = 0;
+
+        for (int i = 0; i < n; i++)
+        {
+            /* Router i checks every neighbor j */
+
+            for (int j = 0; j < n; j++)
+            {
+                if (i == j || originalCost[i][j] >= INF)
+                    continue;
+
+                /* Check every destination k */
+
+                for (int k = 0; k < n; k++)
+                {
+                    if (i == k)
+                        continue;
+
+                    if (dvCost[j][k] < INF &&
+                        originalCost[i][j] + dvCost[j][k]
+                        < dvCost[i][k])
+                    {
+                        dvCost[i][k] =
+                            originalCost[i][j] + dvCost[j][k];
+
+                        dvNextHop[i][k] = j;
+
+                        updated = 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+/* Display Distance Vector Routing Tables */
+
+void displayDistanceVector()
+{
+    printf("\n");
+    printf("=============================================\n");
+    printf("       DISTANCE VECTOR ROUTING\n");
+    printf("=============================================\n");
+
+    for (int i = 0; i < n; i++)
+    {
+        printf("\nRouting Table of Router %s\n", name[i]);
+
+        printf("%-15s %-10s %-10s\n",
+               "Destination",
+               "Cost",
+               "NextHop");
+
+        printf("---------------------------------------------\n");
+
+        for (int j = 0; j < n; j++)
+        {
+            if (i == j)
+                continue;
+
+            printf("%-15s", name[j]);
+
+            if (dvCost[i][j] >= INF)
+            {
+                printf("%-10s %-10s\n", "INF", "-");
+            }
+            else
+            {
+                printf("%-10d %-10s\n",
+                       dvCost[i][j],
+                       name[dvNextHop[i][j]]);
+            }
+        }
+    }
+}
+
+
+/* =========================================================
+   LINK STATE ROUTING
+   ========================================================= */
+
+/* Dijkstra's Algorithm */
+
+void dijkstra(int source)
+{
+    int visited[MAX] = {0};
+
+    /* Initialize distances */
+
+    for (int i = 0; i < n; i++)
+    {
+        lsDist[source][i] = originalCost[source][i];
+
+        if (i != source &&
+            originalCost[source][i] < INF)
+        {
+            lsNextHop[source][i] = i;
+        }
+        else
+        {
+            lsNextHop[source][i] = -1;
+        }
+    }
+
+    lsDist[source][source] = 0;
+    lsNextHop[source][source] = source;
+
+    visited[source] = 1;
+
+
+    /* Find shortest paths */
+
+    for (int count = 1; count < n; count++)
+    {
+        int u = -1;
+        int minDist = INF;
+
+        /* Find unvisited node with minimum distance */
+
+        for (int i = 0; i < n; i++)
+        {
+            if (!visited[i] &&
+                lsDist[source][i] < minDist)
+            {
+                minDist = lsDist[source][i];
+                u = i;
+            }
+        }
+
+        /* No more reachable nodes */
+
+        if (u == -1)
+            break;
+
+        visited[u] = 1;
+
+
+        /* Relax edges */
+
+        for (int v = 0; v < n; v++)
+        {
+            if (!visited[v] &&
+                originalCost[u][v] < INF &&
+                lsDist[source][u] + originalCost[u][v]
+                < lsDist[source][v])
+            {
+                lsDist[source][v] =
+                    lsDist[source][u] +
+                    originalCost[u][v];
+
+                /*
+                   The first hop from source to v
+                   is the same as the first hop
+                   from source to u.
+                */
+
+                lsNextHop[source][v] =
+                    (u == source)
+                    ? v
+                    : lsNextHop[source][u];
+            }
+        }
+    }
+}
+
+
+/* Run Dijkstra from every router */
+
+void runLinkState()
+{
+    for (int i = 0; i < n; i++)
+        dijkstra(i);
+}
+
+
+/* Display Link State Routing Tables */
+
+void displayLinkState()
+{
+    printf("\n");
+    printf("=============================================\n");
+    printf("          LINK STATE ROUTING\n");
+    printf("=============================================\n");
+
+    for (int i = 0; i < n; i++)
+    {
+        printf("\nRouting Table of Router %s\n", name[i]);
+
+        printf("%-15s %-10s %-10s\n",
+               "Destination",
+               "Cost",
+               "NextHop");
+
+        printf("---------------------------------------------\n");
+
+        for (int j = 0; j < n; j++)
+        {
+            if (i == j)
+                continue;
+
+            printf("%-15s", name[j]);
+
+            if (lsDist[i][j] >= INF)
+            {
+                printf("%-10s %-10s\n", "INF", "-");
+            }
+            else
+            {
+                printf("%-10d %-10s\n",
+                       lsDist[i][j],
+                       name[lsNextHop[i][j]]);
+            }
+        }
+    }
+}
+
+
+/* =========================================================
+   MAIN FUNCTION
+   ========================================================= */
+
+int main()
+{
+    int choice;
+
+    /* Network input is entered only once */
+
+    readInput();
+
+    do
+    {
+        printf("\n\n");
+        printf("=============================================\n");
+        printf("          ROUTING ALGORITHMS\n");
+        printf("=============================================\n");
+        printf("1. Distance Vector Routing\n");
+        printf("2. Link State Routing\n");
+        printf("3. Exit\n");
+        printf("=============================================\n");
+
+        printf("Enter your choice: ");
+        scanf("%d", &choice);
+
+
+        switch (choice)
+        {
+            case 1:
+
+                initDistanceVector();
+
+                runDistanceVector();
+
+                displayDistanceVector();
+
+                break;
+
+
+            case 2:
+
+                runLinkState();
+
+                displayLinkState();
+
+                break;
+
+
+            case 3:
+
+                printf("\nProgram terminated.\n");
+
+                break;
+
+
+            default:
+
+                printf("\nInvalid choice! Please try again.\n");
+        }
+
+    } while (choice != 3);
+
+
+    return 0;
+}
+
+
+
+Enter number of nodes: 4
+Enter node names:
+A
+B
+
+
+c
+d
+Is there a link between A and B? (1-Yes, 0-No): 1
+Enter cost: 6
+Is there a link between A and c? (1-Yes, 0-No): 1
+Enter cost: 7
+Is there a link between A and d? (1-Yes, 0-No): 
+0
+Is there a link between B and c? (1-Yes, 0-No): 0
+Is there a link between B and d? (1-Yes, 0-No): 0
+Is there a link between c and d? (1-Yes, 0-No): 
+0
+
+
+=============================================
+          ROUTING ALGORITHMS
+=============================================
+1. Distance Vector Routing
+2. Link State Routing
+3. Exit
+=============================================
+Enter your choice: 1
+
+=============================================
+       DISTANCE VECTOR ROUTING
+=============================================
+
+Routing Table of Router A
+Destination     Cost       NextHop   
+---------------------------------------------
+B              6          B         
+c              7          c         
+d              INF        -         
+
+Routing Table of Router B
+Destination     Cost       NextHop   
+---------------------------------------------
+A              6          A         
+c              13         A         
+d              INF        -         
+
+Routing Table of Router c
+Destination     Cost       NextHop   
+---------------------------------------------
+A              7          A         
+B              13         A         
+d              INF        -         
+
+Routing Table of Router d
+Destination     Cost       NextHop   
+---------------------------------------------
+A              INF        -         
+B              INF        -         
+c              INF        -         
+
+
+=============================================
+          ROUTING ALGORITHMS
+=============================================
+1. Distance Vector Routing
+2. Link State Routing
+3. Exit
+=============================================
+Enter your choice: 2
+
+=============================================
+          LINK STATE ROUTING
+=============================================
+
+Routing Table of Router A
+Destination     Cost       NextHop   
+---------------------------------------------
+B              6          B         
+c              7          c         
+d              INF        -         
+
+Routing Table of Router B
+Destination     Cost       NextHop   
+---------------------------------------------
+A              6          A         
+c              13         A         
+d              INF        -         
+
+Routing Table of Router c
+Destination     Cost       NextHop   
+---------------------------------------------
+A              7          A         
+B              13         A         
+d              INF        -         
+
+Routing Table of Router d
+Destination     Cost       NextHop   
+---------------------------------------------
+A              INF        -         
+B              INF        -         
+c              INF        -         
+
+
+=============================================
+          ROUTING ALGORITHMS
+=============================================
+1. Distance Vector Routing
+2. Link State Routing
+3. Exit
+=============================================
+Enter your choice: 3
+
+Program terminated.
+
+
+=== Code Execution Successful ===
