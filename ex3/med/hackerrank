@@ -1,0 +1,31 @@
+#include <iostream>
+#include <vector>
+
+int findLonely(const std::vector<int>& arr) {
+    int result = 0;
+    
+    // C++11 range-based for loop
+    for (int num : arr) {
+        result ^= num;
+    }
+    
+    return result;
+}
+
+int main() {
+    // Optimize standard I/O operations for competitive programming
+    std::ios_base::sync_with_stdio(false);
+    std::cin.tie(NULL);
+    
+    int n;
+    if (std::cin >> n) {
+        std::vector<int> arr(n);
+        for (int i = 0; i < n; ++i) {
+            std::cin >> arr[i];
+        }
+        
+        std::cout << findLonely(arr) << "\n";
+    }
+    
+    return 0;
+}
