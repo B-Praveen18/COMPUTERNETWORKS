@@ -1,0 +1,15 @@
+import numpy as np
+
+class Solution:
+    def totalHammingDistance(self, nums: List[int]) -> int:
+        arr = np.asarray(nums, dtype=np.uint32)
+        n = arr.size
+
+        # reinterpret uint32 as bytes, unpack all bits
+        bits = np.unpackbits(
+            arr.view(np.uint8)
+        ).reshape(n, 32)
+
+        counts = bits.sum(axis=0)
+
+        return int(np.sum(counts * (n - counts)))
