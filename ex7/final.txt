@@ -1,0 +1,515 @@
+[24bcs056@mepcolinux ex7]$cat halfdup_server.c
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 15000
+#define SIZE 1024
+
+int main() {
+    int sockfd, n;
+    struct sockaddr_in server, client;
+    socklen_t client_len = sizeof(client);
+    char message[SIZE], reply[SIZE];
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    int opt = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("setsockopt");
+        close(sockfd);
+        return 1;
+    }
+
+    memset(&server, 0, sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(PORT);
+
+    if (bind(sockfd, (struct sockaddr *)&server, sizeof(server)) < 0) {
+        perror("bind");
+        close(sockfd);
+        return 1;
+    }
+
+    printf("UDP Half-Duplex Server waiting on port %d...\n", PORT);
+    printf("Type 'over' to pass turn, 'exit' to quit.\n\n");
+
+    /* Wait for first message from client */
+    client_len = sizeof(client);
+    n = recvfrom(sockfd, message, SIZE - 1, 0,
+                 (struct sockaddr *)&client, &client_len);
+    if (n < 0) {
+        perror("recvfrom");
+        close(sockfd);
+        return 1;
+    }
+    message[n] = '\0';
+
+    while (1) {
+        /* ========== SERVER RECEIVING PHASE ========== */
+        while (1) {
+            printf("Client: %s\n", message);
+
+            if (strcmp(message, "exit") == 0) {
+                printf("Client exited. Closing server.\n");
+                close(sockfd);
+                return 0;
+            }
+
+            if (strcmp(message, "over") == 0) {
+                printf("[Server's turn]\n");
+                break;
+            }
+
+            /* Get next message from client */
+            client_len = sizeof(client);
+            n = recvfrom(sockfd, message, SIZE - 1, 0,
+                         (struct sockaddr *)&client, &client_len);
+            if (n < 0) {
+                perror("recvfrom");
+                close(sockfd);
+                return 1;
+            }
+            message[n] = '\0';
+        }
+
+        /* ========== SERVER SENDING PHASE ========== */
+        while (1) {
+            printf("Server: ");
+            fgets(reply, SIZE, stdin);
+            reply[strcspn(reply, "\n")] = '\0';
+
+            sendto(sockfd, reply, strlen(reply), 0,
+                   (struct sockaddr *)&client, client_len);
+
+            if (strcmp(reply, "exit") == 0) {
+                printf("Server exiting.\n");
+                close(sockfd);
+                return 0;
+            }
+
+            if (strcmp(reply, "over") == 0) {
+                printf("[Client's turn]\n");
+                /* Fetch first message of client's next turn */
+                client_len = sizeof(client);
+                n = recvfrom(sockfd, message, SIZE - 1, 0,
+                             (struct sockaddr *)&client, &client_len);
+                if (n < 0) {
+                    perror("recvfrom");
+                    close(sockfd);
+                    return 1;
+                }
+                message[n] = '\0';
+                break;  /* Back to receiving phase */
+            }
+        }
+    }
+
+    close(sockfd);
+    return 0;
+}
+[24bcs056@mepcolinux ex7]$cat halfdup_client.c
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 15000
+#define SIZE 1024
+
+int main() {
+    int sockfd, n;
+    struct sockaddr_in server;
+    char message[SIZE], reply[SIZE];
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    memset(&server, 0, sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_port = htons(PORT);
+    server.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    printf("UDP Half-Duplex Client started on port %d.\n", PORT);
+    printf("Type 'over' to pass turn, 'exit' to quit.\n\n");
+
+    while (1) {
+        /* ========== CLIENT SENDING PHASE ========== */
+        while (1) {
+            printf("Client: ");
+            fgets(message, SIZE, stdin);
+            message[strcspn(message, "\n")] = '\0';
+
+            sendto(sockfd, message, strlen(message), 0,
+                   (struct sockaddr *)&server, sizeof(server));
+
+            if (strcmp(message, "exit") == 0) {
+                printf("Client exiting.\n");
+                close(sockfd);
+                return 0;
+            }
+
+            if (strcmp(message, "over") == 0) {
+                printf("[Turn passed to Server]\n");
+                break;
+            }
+        }
+
+        /* ========== CLIENT RECEIVING PHASE ========== */
+        while (1) {
+            n = recvfrom(sockfd, reply, SIZE - 1, 0, NULL, NULL);
+            if (n < 0) {
+                perror("recvfrom");
+                close(sockfd);
+                return 1;
+            }
+            reply[n] = '\0';
+
+            printf("Server: %s\n", reply);
+
+            if (strcmp(reply, "exit") == 0) {
+                printf("Server exited. Closing client.\n");
+                close(sockfd);
+                return 0;
+            }
+
+            if (strcmp(reply, "over") == 0) {
+                printf("[Turn passed to Client]\n");
+                break;
+            }
+        }
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+[24bcs056@mepcolinux ex7]$./hc
+UDP Half-Duplex Client started on port 15000.
+Type 'over' to pass turn, 'exit' to quit.
+
+Client: hi
+Client: hello
+Client: how r u
+Client: over
+[Turn passed to Server]
+Server: fine
+Server: how are u
+Server: over
+[Turn passed to Client]
+Client: hi
+Client: over
+[Turn passed to Server]
+Server: hi hello
+Server: hi
+Server: over
+[Turn passed to Client]
+Client: hi
+Client: hello
+Client: how are u
+Client: good to see
+Client: over
+[Turn passed to Server]
+Server: fine
+Server: good to dee u
+Server: how r u
+Server: exit
+Server exited. Closing client.
+
+[24bcs056@mepcolinux ex7]$./hs
+UDP Half-Duplex Server waiting on port 15000...
+Type 'over' to pass turn, 'exit' to quit.
+
+Client: hi
+Client: hello
+Client: how r u
+Client: over
+[Server's turn]
+Server: fine
+Server: how are u
+Server: over
+[Client's turn]
+Client: hi
+hi hello
+Client: over
+[Server's turn]
+Server: Server: hi
+Server: over
+[Client's turn]
+Client: hi
+Client: hello
+Client: how are u
+fine
+Client: good to see
+Client: over
+[Server's turn]
+Server: Server: good to dee u
+Server: how r u
+Server: exit
+Server exiting.
+
+[24bcs056@mepcolinux ex7]$cat string_client.c
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8082
+
+int main() {
+    int sockfd, choice, n;
+    char s1[500], s2[500], req[1024], res[1024];
+    struct sockaddr_in server;
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("Socket error");
+        return 1;
+    }
+    memset(&server, 0, sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_port = htons(PORT);
+    server.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    while (1) {
+        printf("\n1. Concatenation\n");
+        printf("2. Reverse\n");
+        printf("3. Lowercase\n");
+        printf("4. Uppercase\n");
+        printf("5. Exit\n");
+        printf("Enter choice: ");
+
+        if (scanf("%d", &choice) != 1) {
+            printf("Invalid input.\n");
+            close(sockfd);
+            return 1;
+        }
+        getchar();
+
+        if (choice == 5)
+            break;
+
+        if (choice < 1 || choice > 4) {
+            printf("Invalid choice.\n");
+            continue;
+        }
+
+        printf("Enter string: ");
+        if (fgets(s1, sizeof(s1), stdin) == NULL)
+            break;
+        s1[strcspn(s1, "\n")] = '\0';
+
+        s2[0] = '\0';
+
+        if (choice == 1) {
+            printf("Enter second string: ");
+            if (fgets(s2, sizeof(s2), stdin) == NULL)
+                break;
+            s2[strcspn(s2, "\n")] = '\0';
+        }
+
+        snprintf(req, sizeof(req), "%d|%s|%s",
+                 choice, s1, s2);
+
+        if (sendto(sockfd, req, strlen(req), 0,
+                   (struct sockaddr *)&server,
+                   sizeof(server)) < 0) {
+            perror("Send error");
+            continue;
+        }
+
+        n = recvfrom(sockfd, res, sizeof(res) - 1, 0,
+                     NULL, NULL);
+
+        if (n < 0) {
+            perror("Receive error");
+            continue;
+        }
+
+        res[n] = '\0';
+        printf("Result: %s\n", res);
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+[24bcs056@mepcolinux ex7]$cat string_server.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8082
+
+void process_request(char *req, char *res) {
+    int choice, i, len;
+    char s1[1024] = "", s2[1024] = "";
+    char *p1, *p2;
+
+    choice = atoi(req);
+    p1 = strchr(req, '|');
+
+    if (p1 == NULL) {
+        strcpy(res, "Invalid request");
+        return;
+    }
+
+    p1++;
+    p2 = strchr(p1, '|');
+
+    if (p2 != NULL) {
+        *p2 = '\0';
+        strcpy(s2, p2 + 1);
+    }
+
+    strcpy(s1, p1);
+
+    switch (choice) {
+        case 1:
+            strcpy(res, s1);
+            strcat(res, s2);
+            break;
+
+        case 2:
+            len = strlen(s1);
+            for (i = 0; i < len; i++)
+                res[i] = s1[len - 1 - i];
+            res[len] = '\0';
+            break;
+
+        case 3:
+            for (i = 0; s1[i] != '\0'; i++)
+                res[i] = tolower((unsigned char)s1[i]);
+            res[i] = '\0';
+            break;
+
+        case 4:
+            for (i = 0; s1[i] != '\0'; i++)
+                res[i] = toupper((unsigned char)s1[i]);
+            res[i] = '\0';
+            break;
+
+        default:
+            strcpy(res, "Invalid choice");
+    }
+}
+
+int main() {
+    int sockfd, n;
+    char req[1024], res[1024];
+    struct sockaddr_in server, client;
+    socklen_t len = sizeof(client);
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sockfd < 0) {
+        perror("Socket error");
+        return 1;
+    }
+
+    memset(&server, 0, sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(PORT);
+
+    if (bind(sockfd, (struct sockaddr *)&server,
+             sizeof(server)) < 0) {
+        perror("Bind error");
+        close(sockfd);
+        return 1;
+    }
+
+    printf("UDP server waiting...\n");
+
+    while (1) {
+        n = recvfrom(sockfd, req, sizeof(req) - 1, 0,
+                     (struct sockaddr *)&client, &len);
+
+        if (n < 0) {
+            perror("Receive error");
+            continue;
+        }
+
+        req[n] = '\0';
+        printf("Request: %s\n", req);
+
+        process_request(req, res);
+
+        if (sendto(sockfd, res, strlen(res), 0,
+                   (struct sockaddr *)&client, len) < 0)
+            perror("Send error");
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+[24bcs056@mepcolinux ex7]$./ss
+UDP server waiting...
+Request: 1|hi|helli
+Request: 2|carace|
+Request: 3|HI|
+Request: 4|hi|
+
+[24bcs056@mepcolinux ex7]$./sc
+
+1. Concatenation
+2. Reverse
+3. Lowercase
+4. Uppercase
+5. Exit
+Enter choice: 1
+Enter string: hi
+Enter second string: helli
+Result: hihelli
+
+1. Concatenation
+2. Reverse
+3. Lowercase
+4. Uppercase
+5. Exit
+Enter choice: 2
+Enter string: carace
+Result: ecarac
+
+1. Concatenation
+2. Reverse
+3. Lowercase
+4. Uppercase
+5. Exit
+Enter choice: 3
+Enter string: HI
+Result: hi
+
+1. Concatenation
+2. Reverse
+3. Lowercase
+4. Uppercase
+5. Exit
+Enter choice: 4
+Enter string: hi
+Result: HI
+
+1. Concatenation
+2. Reverse
+3. Lowercase
+4. Uppercase
+5. Exit
+Enter choice: 5
