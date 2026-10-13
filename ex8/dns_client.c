@@ -1,3 +1,4 @@
+tudent@cts-OptiPlex-3070:~$ cat q12.c
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
