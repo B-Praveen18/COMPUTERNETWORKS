@@ -1,4 +1,3 @@
-student@cts-OptiPlex-3070:~$ cat q21.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
