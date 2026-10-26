@@ -1,0 +1,702 @@
+[24bcs056@mepcolinux ex8]$cat final.txt
+client1.c
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8082
+#define SIZE 1024
+
+int main() {
+    int sockfd, n;
+    struct sockaddr_in server;
+    char domain[SIZE], ip[SIZE];
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    memset(&server, 0, sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_port = htons(PORT);
+    server.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    do {
+        printf("Domain: ");
+        fgets(domain, SIZE, stdin);
+        domain[strcspn(domain, "\n")] = '\0';
+
+        sendto(sockfd, domain, strlen(domain), 0,
+               (struct sockaddr *)&server, sizeof(server));
+
+        if (strcmp(domain, "-1") == 0)
+            break;
+
+        n = recvfrom(sockfd, ip, SIZE - 1, 0, NULL, NULL);
+        if (n < 0) {
+            perror("recvfrom");
+            close(sockfd);
+            return 1;
+        }
+
+        ip[n] = '\0';
+        printf("IP: %s\n", ip);
+    } while (1);
+
+    close(sockfd);
+    return 0;
+}
+
+
+server1.c
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+#define PORT 8082
+#define SIZE 1024
+#define MAX 10
+#define CACHE_MAX 100
+#define CACHE_FILE "dns_cache.txt"
+
+typedef struct {
+    char domain[SIZE];
+    char ip[SIZE];
+} CacheEntry;
+
+CacheEntry cache[CACHE_MAX];
+int cache_count = 0;
+
+/* Check if two addresses are the same */
+int same(struct sockaddr_in *a, struct sockaddr_in *b) {
+    return a->sin_addr.s_addr == b->sin_addr.s_addr && a->sin_port == b->sin_port;
+}
+
+/* Load cache from file into memory */
+void load_cache(void) {
+    FILE *fp = fopen(CACHE_FILE, "r");
+    if (!fp) return;
+    cache_count = 0;
+    while (cache_count < CACHE_MAX &&
+           fscanf(fp, "%s %s", cache[cache_count].domain, cache[cache_count].ip) == 2) {
+        cache_count++;
+    }
+    fclose(fp);
+}
+
+/* Save entire cache from memory to file */
+void save_cache(void) {
+    FILE *fp = fopen(CACHE_FILE, "w");
+    if (!fp) return;
+    for (int i = 0; i < cache_count; i++) {
+        fprintf(fp, "%s %s\n", cache[i].domain, cache[i].ip);
+    }
+    fclose(fp);
+}
+
+/* Search cache in memory */
+char *find_in_cache(const char *domain) {
+    for (int i = 0; i < cache_count; i++) {
+        if (strcmp(cache[i].domain, domain) == 0) {
+            return cache[i].ip;
+        }
+    }
+    return NULL;
+}
+
+/* Add new entry to cache */
+void add_to_cache(const char *domain, const char *ip) {
+    if (cache_count >= CACHE_MAX) return;
+    /* Avoid duplicates */
+    if (find_in_cache(domain)) return;
+    strncpy(cache[cache_count].domain, domain, SIZE - 1);
+    cache[cache_count].domain[SIZE - 1] = '\0';
+    strncpy(cache[cache_count].ip, ip, SIZE - 1);
+    cache[cache_count].ip[SIZE - 1] = '\0';
+    cache_count++;
+}
+
+/* Lookup domain: cache first, then hardcoded list */
+void lookup(const char *domain, char *ip) {
+    /* 1. Check cache first */
+    char *cached_ip = find_in_cache(domain);
+    if (cached_ip) {
+        strcpy(ip, cached_ip);
+        return;
+    }
+
+    /* 2. Check hardcoded list */
+    const char *names[] = {"google.com", "yahoo.com", "example.com",
+                           "github.com", "facebook.com", "twitter.com"};
+    const char *ips[]   = {"142.250.0.1", "98.137.11.163", "93.184.216.34",
+                           "140.82.121.4", "157.240.0.35", "104.244.42.1"};
+
+    for (int i = 0; i < 6; i++) {
+        if (strcmp(domain, names[i]) == 0) {
+            strcpy(ip, ips[i]);
+            /* Save to cache for future requests */
+            add_to_cache(domain, ips[i]);
+            save_cache();
+            return;
+        }
+    }
+
+    strcpy(ip, "Not found");
+}
+
+int main() {
+    int sockfd, n, has = 0, next = 1, cur = 0;
+    struct sockaddr_in server, from, current;
+    struct {
+        struct sockaddr_in addr;
+        int id;
+        char domain[SIZE];
+    } wait[MAX];
+    int wn = 0;
+    char domain[SIZE], ip[SIZE];
+
+    /* Load existing cache from file */
+    load_cache();
+
+    sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    memset(&server, 0, sizeof(server));
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY;
+    server.sin_port = htons(PORT);
+    bind(sockfd, (struct sockaddr *)&server, sizeof(server));
+
+    printf("Ready\n");
+    fflush(stdout);
+
+    while (1) {
+        socklen_t len = sizeof(from);
+        n = recvfrom(sockfd, domain, SIZE - 1, 0,
+                     (struct sockaddr *)&from, &len);
+        if (n < 0) continue;
+        domain[n] = '\0';
+
+        int widx = -1;
+        for (int i = 0; i < wn; i++) {
+            if (same(&wait[i].addr, &from)) {
+                widx = i;
+                break;
+            }
+        }
+
+        if (!has) {
+            current = from;
+            cur = next++;
+            has = 1;
+            printf("C%d connected\n", cur);
+            fflush(stdout);
+        } else if (!same(&from, &current)) {
+            if (widx == -1) {
+                if (wn >= MAX) continue;
+                wait[wn].addr = from;
+                wait[wn].id = next++;
+                strncpy(wait[wn].domain, domain, SIZE - 1);
+                wait[wn].domain[SIZE - 1] = '\0';
+                /* REQUIREMENT 2: Server prints NOTHING for waiting clients */
+                wn++;
+            } else {
+                strncpy(wait[widx].domain, domain, SIZE - 1);
+                wait[widx].domain[SIZE - 1] = '\0';
+            }
+            continue;
+        }
+
+        if (strcmp(domain, "-1") == 0) {
+            printf("C%d left\n", cur);
+            fflush(stdout);
+            has = 0;
+            while (wn > 0 && !has) {
+                current = wait[0].addr;
+                cur = wait[0].id;
+                strncpy(domain, wait[0].domain, SIZE - 1);
+                domain[SIZE - 1] = '\0';
+                for (int i = 0; i < wn - 1; i++) wait[i] = wait[i + 1];
+                wn--;
+                if (strcmp(domain, "-1") == 0) {
+                    printf("C%d left\n", cur);
+                    fflush(stdout);
+                } else {
+                    has = 1;
+                    printf("C%d connected\n", cur);
+                    fflush(stdout);
+                    lookup(domain, ip);
+                    sendto(sockfd, ip, strlen(ip), 0,
+                          (struct sockaddr *)&current, sizeof(current));
+                    printf("C%d: %s\n", cur, domain);
+                    fflush(stdout);
+                }
+            }
+            if (!has) cur = 0;
+            continue;
+        }
+
+        lookup(domain, ip);
+        sendto(sockfd, ip, strlen(ip), 0,
+               (struct sockaddr *)&from, sizeof(from));
+        printf("C%d: %s\n", cur, domain);
+        fflush(stdout);
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+
+
+
+client2.c
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+
+#define PORT 8095
+#define SIZE 1024
+
+int main(void)
+{
+    int s, n, running = 1;
+    char b[SIZE];
+    struct sockaddr_in addr = {0};
+    socklen_t len = sizeof(addr);
+    fd_set readfds;
+    struct timeval timeout;
+
+    s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+    /* Set 2-second receive timeout for handshake retries */
+    timeout.tv_sec = 2;
+    timeout.tv_usec = 0;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+    /* ================================================================ */
+    /* PHASE 1: Connect to server - retry HELLO until connected         */
+    /* If server sends WAIT, block until server sends CONNECTED later   */
+    /* ================================================================ */
+    int connected = 0;
+    while (!connected) {
+        if (sendto(s, "HELLO", 5, 0,
+                   (struct sockaddr *)&addr, len) < 0) {
+            perror("sendto");
+            close(s);
+            return 1;
+        }
+
+        n = recvfrom(s, b, SIZE - 1, 0, NULL, NULL);
+        if (n > 0) {
+            b[n] = '\0';
+
+            if (strcmp(b, "CONNECTED") == 0) {
+                printf("Connected to server. Type EXIT to quit.\n\n");
+                connected = 1;
+            } else if (strcmp(b, "WAIT") == 0) {
+                printf("Server is busy. You are in queue. Waiting for your turn...\n");
+                /* Server will send CONNECTED when active client exits */
+                /* Wait with periodic retry in case CONNECTED is lost */
+                while (!connected) {
+                    n = recvfrom(s, b, SIZE - 1, 0, NULL, NULL);
+                    if (n > 0) {
+                        b[n] = '\0';
+                        if (strcmp(b, "CONNECTED") == 0) {
+                            printf("Connected to server. Type EXIT to quit.\n\n");
+                            connected = 1;
+                        }
+                    } else {
+                        /* Timeout - remind server we are still waiting */
+                        printf("Still waiting... retrying HELLO.\n");
+                        sendto(s, "HELLO", 5, 0,
+                               (struct sockaddr *)&addr, len);
+                    }
+                }
+            } else if (strcmp(b, "BUSY") == 0) {
+                printf("Server busy. Retrying in 1 second...\n");
+                sleep(1);
+            } else {
+                printf("Unexpected response: %s. Retrying...\n", b);
+                sleep(1);
+            }
+        } else {
+            /* Timeout - no response from server, retry HELLO */
+            printf("No response from server. Retrying HELLO...\n");
+        }
+    }
+
+    /* Remove timeout for normal full-duplex chat */
+    struct timeval no_timeout = {0, 0};
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &no_timeout, sizeof(no_timeout));
+
+    printf("Client> ");
+    fflush(stdout);
+
+    /* ================================================================ */
+    /* PHASE 2: Full-duplex chat                                        */
+    /* ================================================================ */
+    while (running) {
+        FD_ZERO(&readfds);
+        FD_SET(STDIN_FILENO, &readfds);
+        FD_SET(s, &readfds);
+
+        if (select(s + 1, &readfds, NULL, NULL, NULL) < 0) {
+            perror("select");
+            break;
+        }
+
+        /* Message received from server */
+        if (FD_ISSET(s, &readfds)) {
+            n = recvfrom(s, b, SIZE - 1, 0, NULL, NULL);
+            if (n <= 0)
+                continue;
+
+            b[n] = '\0';
+            printf("\r\033[K");
+
+            if (strcmp(b, "EXIT") == 0) {
+                printf("Server left the chat.\n");
+                running = 0;
+            } else {
+                printf("Server: %s\nClient> ", b);
+                fflush(stdout);
+            }
+        }
+
+        /* Input typed by user */
+        if (running && FD_ISSET(STDIN_FILENO, &readfds)) {
+            if (!fgets(b, sizeof(b), stdin))
+                strcpy(b, "EXIT");
+            else
+                b[strcspn(b, "\n")] = '\0';
+
+            if (b[0] == '\0') {
+                printf("Client> ");
+                fflush(stdout);
+                continue;
+            }
+
+            if (sendto(s, b, strlen(b), 0,
+                       (struct sockaddr *)&addr, len) < 0) {
+                perror("sendto");
+                break;
+            }
+
+            if (strcmp(b, "EXIT") == 0) {
+                printf("You left the chat.\n");
+                running = 0;
+            } else {
+                printf("Client> ");
+                fflush(stdout);
+            }
+        }
+    }
+
+    close(s);
+    return 0;
+}
+
+
+sever2.c
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+
+#define PORT 8095
+#define SIZE 1024
+
+/* Compare two sockaddr_in addresses */
+int addr_equal(struct sockaddr_in *a, struct sockaddr_in *b) {
+    return (a->sin_addr.s_addr == b->sin_addr.s_addr &&
+            a->sin_port == b->sin_port);
+}
+
+int main(void)
+{
+    int s, n;
+    char b[SIZE];
+    struct sockaddr_in addr = {0}, client = {0};
+    socklen_t len = sizeof(client);
+    fd_set readfds;
+
+    /* Active client tracking */
+    int has_active_client = 0;
+    struct sockaddr_in active_client;
+
+    /* Waiting client tracking */
+    int has_waiting_client = 0;
+    struct sockaddr_in waiting_client;
+    socklen_t waiting_len;
+
+    s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) {
+        perror("socket");
+        return 1;
+    }
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("bind");
+        close(s);
+        return 1;
+    }
+
+    printf("=== Sequential Full-Duplex UDP Server ===\n");
+    printf("Only ONE client at a time. Waiting on port %d...\n\n", PORT);
+
+    while (1) {
+        /* ============================================================ */
+        /* AUTO-PROMOTE: If a client was waiting, grant access immediately  */
+        /* ============================================================ */
+        if (has_waiting_client) {
+            active_client = waiting_client;
+            len = waiting_len;
+            has_active_client = 1;
+            has_waiting_client = 0;
+
+            sendto(s, "CONNECTED", 9, 0,
+                   (struct sockaddr *)&active_client, len);
+            printf("[AUTO-CONNECT] Promoted waiting client %s:%d\n",
+                   inet_ntoa(active_client.sin_addr), ntohs(active_client.sin_port));
+            printf("Type EXIT to release client and wait for next.\n\n");
+            printf("Server> ");
+            fflush(stdout);
+        } else {
+            /* ========================================================= */
+            /* PHASE 1: Block and wait for HELLO from any client           */
+            /* ========================================================= */
+            memset(&client, 0, sizeof(client));
+            len = sizeof(client);
+
+            printf("[WAITING] No active client. Waiting for HELLO...\n");
+            fflush(stdout);
+
+            n = recvfrom(s, b, SIZE - 1, 0,
+                         (struct sockaddr *)&client, &len);
+
+            if (n <= 0) {
+                perror("recvfrom");
+                continue;
+            }
+
+            b[n] = '\0';
+
+            if (strcmp(b, "HELLO") != 0) {
+                printf("[REJECT] Expected HELLO, got: %s from %s:%d\n",
+                       b, inet_ntoa(client.sin_addr), ntohs(client.sin_port));
+                continue;
+            }
+
+            /* Grant access to first client */
+            active_client = client;
+            has_active_client = 1;
+
+            sendto(s, "CONNECTED", 9, 0,
+                   (struct sockaddr *)&active_client, len);
+
+            printf("[LOCK] Client %s:%d acquired access.\n",
+                   inet_ntoa(active_client.sin_addr), ntohs(active_client.sin_port));
+            printf("Type EXIT to release client and wait for next.\n\n");
+            printf("Server> ");
+            fflush(stdout);
+        }
+
+        /* ============================================================ */
+        /* PHASE 2: Full-duplex chat with active client ONLY              */
+        /* ============================================================ */
+        int running = 1;
+        while (running) {
+            FD_ZERO(&readfds);
+            FD_SET(STDIN_FILENO, &readfds);
+            FD_SET(s, &readfds);
+
+            if (select(s + 1, &readfds, NULL, NULL, NULL) < 0) {
+                perror("select");
+                running = 0;
+                break;
+            }
+
+            /* Data received from network */
+            if (FD_ISSET(s, &readfds)) {
+                struct sockaddr_in from = {0};
+                socklen_t from_len = sizeof(from);
+
+                n = recvfrom(s, b, SIZE - 1, 0,
+                             (struct sockaddr *)&from, &from_len);
+
+                if (n <= 0)
+                    continue;
+
+                b[n] = '\0';
+
+                /* Message from non-active client */
+                if (!addr_equal(&from, &active_client)) {
+                    if (strcmp(b, "HELLO") == 0) {
+                        if (!has_waiting_client) {
+                            /* Store this client as waiting */
+                            waiting_client = from;
+                            waiting_len = from_len;
+                            has_waiting_client = 1;
+                            sendto(s, "WAIT", 4, 0,
+                                   (struct sockaddr *)&from, from_len);
+                            printf("\r\033[K[WAITING LIST] Client %s:%d queued.\nServer> ",
+                                   inet_ntoa(from.sin_addr), ntohs(from.sin_port));
+                            fflush(stdout);
+                        } else if (addr_equal(&from, &waiting_client)) {
+                            /* Same client retrying - re-acknowledge */
+                            sendto(s, "WAIT", 4, 0,
+                                   (struct sockaddr *)&from, from_len);
+                        } else {
+                            /* Already have someone waiting */
+                            sendto(s, "BUSY", 4, 0,
+                                   (struct sockaddr *)&from, from_len);
+                        }
+                    } else {
+                        sendto(s, "BUSY", 4, 0,
+                               (struct sockaddr *)&from, from_len);
+                    }
+                    continue;
+                }
+
+                /* Message from active client */
+                printf("\r\033[K");
+
+                if (strcmp(b, "EXIT") == 0) {
+                    printf("Client left the chat. Access released.\n\n");
+                    running = 0;
+                } else {
+                    printf("Client: %s\nServer> ", b);
+                    fflush(stdout);
+                }
+            }
+
+            /* Data typed by server user on keyboard */
+            if (running && FD_ISSET(STDIN_FILENO, &readfds)) {
+                if (!fgets(b, sizeof(b), stdin))
+                    strcpy(b, "EXIT");
+                else
+                    b[strcspn(b, "\n")] = '\0';
+
+                if (b[0] == '\0') {
+                    printf("Server> ");
+                    fflush(stdout);
+                    continue;
+                }
+
+                if (sendto(s, b, strlen(b), 0,
+                           (struct sockaddr *)&active_client, len) < 0) {
+                    perror("sendto");
+                    running = 0;
+                    break;
+                }
+
+                if (strcmp(b, "EXIT") == 0) {
+                    printf("You ended the chat. Access released.\n\n");
+                    running = 0;
+                } else {
+                    printf("Server> ");
+                    fflush(stdout);
+                }
+            }
+        }
+
+        /* ============================================================ */
+        /* Chat ended - release active client and check for waiting       */
+        /* ============================================================ */
+        has_active_client = 0;
+
+        if (has_waiting_client) {
+            printf("[UNLOCK] Waiting client found. Auto-connecting now...\n");
+            /* Loop back to top - outer while will auto-promote */
+        } else {
+            printf("[UNLOCK] No waiting client. Back to waiting for HELLO...\n\n");
+        }
+    }
+
+    close(s);
+    return 0;
+}
+
+
+
+prince@Prince:/mnt/c/DNSProject$ ./client1
+Domain: google.com
+IP: 142.250.0.1
+Domain: yahoo.com
+IP: 98.137.11.163
+Domain: github.com
+IP: 140.82.121.4
+Domain: ^C
+
+prince@Prince:/mnt/c/DNSProject$ ./server1
+Ready
+C1 connected
+C1: google.com
+C1: yahoo.com
+C1: github.com
+
+
+prince@Prince:/mnt/c/DNSProject$ ./client2
+No response from server. Retrying HELLO...
+No response from server. Retrying HELLO...
+No response from server. Retrying HELLO...
+Connected to server. Type EXIT to quit.
+
+Server: hii
+Client> hello
+Server: how u doing do
+Client> brooo
+Server: hello guys
+Client> whatsupp
+Server: brooooooo
+Client> bye
+Server: exit
+Server left the chat.
+
+prince@Prince:/mnt/c/DNSProject$ ./server2
+=== Sequential Full-Duplex UDP Server ===
+Only ONE client at a time. Waiting on port 8095...
+
+[WAITING] No active client. Waiting for HELLO...
+[LOCK] Client 127.0.0.1:39320 acquired access.
+Type EXIT to release client and wait for next.
+
+Server> hii
+Client: hello
+Server> how u doing do
+Client: brooo
+Server> hello guys
+Client: whatsupp
+Server> brooooooo
+Client: bye
+Server> exit
+Server> EXIT
+You ended the chat. Access released.
+
+[UNLOCK] No waiting client. Back to waiting for HELLO...
+
+[WAITING] No active client. Waiting for HELLO...
